@@ -1,71 +1,111 @@
 #!/usr/bin/perl
 
+# Receive arguments from .sh script
 my $file = $ARGV[0];
-
-my $type = '';
-if(scalar @ARGV == 2) {
-    $type = $ARGV[1];
-}
-if($type eq 'quickfix') {
-    $type = 'qfx';
-}
+my $type = $ARGV[1];
      
 
-open my $phpInput, '<', $file or die "can't open $file: $!";
+# Open $file into $phpInput buffer
+open my $phpInput, '<', $file or die "can't open $file: $!\n";
 my @incFiles;
+
+# Skip inc files with no 'mysql' queries
+# Add more if necessary
+my @skipFiles = ('pdo.inc','crumb.inc','tab.inc', 'array.inc', 'alphabetbar.inc', 'simpleimage.inc', 'phone.inc' );
+
+# Loop over each line in $file
 while (<$phpInput>) {
     chomp;
-    #print "$_\n";
-    push @incFiles, $_ =~ m/require_once\(["'] *([A-Za-z\._0-9\/-]+) *["']\)/g;
+    # Add required filenames to @incFiles array
+    if(/require_once\(["'] *([A-Za-z\._0-9\/-]+\.inc) *["']\);/g) {
+        # $1-$9 are automatically populated by regex groups in matching operations
+        if(!($1 ~~ @skipFiles)) {
+            push @incFiles, $1;
+        }
+    }
 }
+# "$." contains the current line number of the last filehandle accessed
+$totalLines = $.;
 close $phpInput;
 
-my @functions;
-my @skipFiles = ('pdo.inc','crumb.inc','tab.inc', 'array.inc', 'alphabetbar.inc', 'simpleimage.inc', 'phone.inc' );
-my @skipFunctions = ('formatDateTime', 'Display', 'htmlQuotes');
+
+my @incFunctions;
+
+
+# Skip specific functions that are commonly used
+# Add more if necessary.
+my @skipFunctions = ('Display', 'htmlQuotes');
+
+# "$|" forces the STDOUT buffer to flush before receiving a newline character
+# This effectively allows us to edit the terminal output even after it appears on screen
+local $| = 1;
+my $totalInc = scalar @incFiles;
+print "Searching $totalInc '.inc' files...0/$totalInc";
+
+my $count = 0;
 foreach(@incFiles) {
-    if($_ ~~ @skipFiles) {
-        next;
-    }
-    open my $incInput, '<', $_ or die "can't open $_ $!";
+    # Backspace correct number of times
+    print ("\b" x (length($count) + 1 + length($totalInc)));
+
+    # Print updated numbers
+    $count++;
+    print (($count)."/$totalInc");
+
+    # Open current .inc file
+    open my $incInput, '<', $_ or die "\nCan't open $_ $!\n";
     while (<$incInput>) {
         chomp;
-        if($_ =~ /function +([A-Za-z_0-9-]+)\b/g) {
-            if(!($1 ~~ @functions) && !($1 ~~ @skipFunctions)) {
-                push @functions, $1;
+
+        # find function declarations
+        if(/function +([A-Za-z_0-9-]+)\b/g) {
+            # if not in @incFunctions or @skipFunctions arrays, append to @incFunctions
+            if(!($1 ~~ @incFunctions) && !($1 ~~ @skipFunctions)) {
+                push @incFunctions, $1;
             }
         }
     }
     close $incInput;
 }
+$| = 0;
 
-my @foundFunctionsTxt;
-my @foundFunctionsQfx;
-my $lineNum = 0;
+print "\nFound ".scalar @incFunctions." unique function names.\n";
+
+$| = 1;
+print "Searching $file for matches...0/$totalLines";
+
+my @foundFunctions;
+
+# open ".php" file again
 open my $phpInput2, '<', $file or die "can't open $file: $!";
 while (<$phpInput2>) {
     chomp;
-    ($line) = $_;
-    $lineNum++;
-    foreach(@functions) {
-        #print "$_\n";
+    # current line of file
+    $line = $_;
+
+    # "$." is the current line number
+    print ("\b" x (length($.-1) + 1 + length($totalLines)));
+    print (($.)."/$totalLines");
+
+    # check current line against each inc function
+    foreach(@incFunctions) {
         if($line =~ /\b($_) *\(/i) {
-            push @foundFunctionsTxt, "$lineNum: $_";
-            push @foundFunctionsQfx, "$file:$lineNum:$_";
+            if($type eq 'txt') {
+                push @foundFunctions, "$.: $_";
+            }else{
+                push @foundFunctions, "$file:$.:$_";
+            }
         }
     }
 }
 close $phpInput2;
 
-if($type eq 'txt' or $type eq '') {
-    open(my $txtInput, '>', "inc_functions.txt") or die "Could not open file 'inc_functions.txt' $!";
-    my $foundNamesTxt = join "\n", @foundFunctionsTxt;
-    print $txtInput $foundNamesTxt;
-    close $txtInput;
-}
-if($type eq 'qfx' or $type eq '') {
-    open(my $qfxInput, '>', "inc_functions.qfx") or die "Could not open file 'inc_funtions.qfx' $!";
-    my $foundNamesQfx = join "\n", @foundFunctionsQfx;
-    print $qfxInput $foundNamesQfx;
-    close $qfxInput;
-}
+print "\n";
+$| = 0;
+
+print "Found ".scalar @foundFunctions." matches.\n";
+
+# Write to qfx or txt file
+open(my $output, '>', "inc_functions.$type") or die "Could not open file 'inc_functions.$type' $!\n";
+my $foundNames = join "\n", @foundFunctions;
+print $output $foundNames;
+close $output;
