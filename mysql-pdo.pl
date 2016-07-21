@@ -1,14 +1,20 @@
 #!/usr/bin/perl
 use Tie::File;
 
-my @files = glob "$ARGV[0]";
-#my @files = glob "students.php";
-#my @files = glob "*.php";
-#push @files, glob "*.inc";
-#push @files, glob "Reports/0/*.php";
-#push @files, glob "Reports/0/*.inc";
-#push @files, glob "admissions/*.php";
-#push @files, glob "admissions/*.inc";
+my @files;
+if ( @ARGV > 1 ) {
+    @files = @ARGV;
+} elsif(@ARGV == 1) {
+    @files = glob "$ARGV[0]";
+} else {
+    print "Error: no files found\n";
+    exit;
+}
+
+if(@files < 1) {
+    print "Error: no files found\n";
+    exit;
+}
 
 # Globals
 my $sqlVar = '';
@@ -23,15 +29,17 @@ my $inputsDone = 0;
 my $insVals = 0;
 my $queryLine = 0;
 my $whereLine = 0;
+my $sqlLine = 0;
 my @array;
 my @varNames;
 my @keyNames;
 my @vars;
 
+my $debug = 0;
+
 my $count = 1;
 
 foreach $file(@files){
-    #my $file = $ARGV[0];
     print "$count Checking $file\n";
     my $jump = 0;
     do {
@@ -49,13 +57,12 @@ sub do_file {
     #clear_globals();
     tie @array, 'Tie::File', $_[0] or die "Can't open $_[0] $!\n";
     $stop = scalar(@array);
-    print "STOP: $stop\n";
-    print $array[$stop];
+    #print "STOP: $stop\n";
+    #print $array[$stop];
 
-    print "\n";
+    #print "\n";
 
-    #$start = 3780;
-    #$stop = 3850;
+    #$stop = 4030;
 
     for(my $i=$start; $i<$stop; $i++) {
         my $line = $array[$i];
@@ -66,11 +73,12 @@ sub do_file {
 
             next;
         }
-        if($line =~ /^([ \s\t]*)\$([^ =]+) *= *" *(select|update|insert|delete)[ "]/i && $sql == 0) {
-            #if($i< 2300) {
-                #print "MATCH $i\n";
-                #print "$2 || $3 || $line\n";
+        if($line =~ /^([ \s\t]*)\$([^ =]+) *= *" *(select|update|insert|delete)[ "]/i) {
+            #if($i > $debug) {
+                print "MATCH $i\n";
+                print "$2 || $3 || $line\n";
             #}
+            $sqlLine = $i;
 
             $spaces = $1;
             $sqlVar = $2;
@@ -89,7 +97,7 @@ sub do_file {
             
             if($sqlType =~/^select$/) {
                 ($line) = $line =~ s/\\" *(\$.+?) *\\"/$1/gr;
-                if($i> 4200) {
+                if($i > $debug) {
                     #print "SQLVAR $i $sqlVar $line\n";
                 }
                 if($line =~ /$sqlVar *\.?= *"(.+(?:[<>!=]++|LIKE).+) *";/i) {
@@ -104,6 +112,7 @@ sub do_file {
                             $varCount++;
                             ($varName) = quotemeta $vars[$x];
                             ($keyName) = $vars[$x-1] =~ s/^\$?(.+) */$1_$varCount/r;
+                            $keyName = $keyName =~ s/[^A-Za-z0-9_]/_/gr;
                             #$oldKey = $vars[$x-1];
                             #print "VARNAME: $varName| COL: $keyName| $oldKey\n";
                             $line = $line =~ s/([<>!=]++|LIKE)([' ]*+)?$varName([' ]*)/$1 :$keyName /gr;
@@ -115,15 +124,15 @@ sub do_file {
                     }
                 }
             }elsif($sqlType =~ /^(update|delete)$/){
-                #print "UPDATE \n";
+                #print "UPDATE/DELETE $i: $sqlType \n";
                 ($line) = $line =~ s/\\" *(\$.+?) *\\"/$1/gr;
                 if($line =~ /$sqlVar *\.?= *"(.+(?:[<>!=]++|LIKE).+) *";/i) {
-                    if($i > 4200) {
+                    if($i > $debug) {
                         #print "$1\n";
                     }
                     (@vars) = $1 =~ m/([A-Za-z0-9_]+) *(?:[<>!=]++|LIKE)(?:[ ']*)(\$[A-Za-z0-9_\->%]+)(?:[ ']*),? */g;
                     $tmp = join ", ", @vars;
-                    if($i < 2200) {
+                    if($i > $debug) {
                         #print "$sqlVar Test Vars:$i $tmp\n";
                     }
                     for(my $x=0; $x<@vars; $x++) {
@@ -134,6 +143,7 @@ sub do_file {
                             $varCount++;
                             ($varName) = quotemeta $vars[$x];
                             ($keyName) = $vars[$x-1] =~ s/\$?(.+) *$/$1_$varCount/r;
+                            $keyName = $keyName =~ s/[^A-Za-z0-9_]/_/gr;
                             #print "VARNAME: $varName| COL: $keyName| \n";
                             #print "OLDLINE $i $line\n";
                             $line = $line =~ s/([<>!=]++|LIKE)([' ]*+)?$varName([' ]*)/$1 :$keyName /gr;
@@ -152,10 +162,10 @@ sub do_file {
                     ($thisLine) = $1;
                     if($thisLine =~ /values *\(/i) {
                         #print "THIS LINE1: $thisLine\n";
-                        ($testLine) = $thisLine =~ m/values(.+)/i;
+                        #($testLine) = $thisLine =~ m/values(.+)/i;
                         #print "THIS LINE: $testLine\n";
-                        (@vars) = $testLine =~ m/(?:[ ']*)(\$[A-Za-z0-9_\->]+)(?:[ ']*),?+ */g;
-                        if($i < 2200) {
+                        (@vars) = $thisLine =~ m/(?:[ ']*)(\$[A-Za-z0-9_\->]+)(?:[ ']*),?+ */g;
+                        if($i > $debug) {
                             #print "VALUESLINE $line \n";
                             #print "TESTLINE  $testLine \n";
                         }
@@ -166,7 +176,7 @@ sub do_file {
                         $insVals = 1;
                         next;
                     }elsif($insVals == 1) {
-                        if($i < 2200) {
+                        if($i > $debug) {
                             #print "Searching Values $thisLine\n";
                         }
                         (@vars) = $thisLine =~ m/(?:[ ']*)(\$[A-Za-z0-9_\->]+)(?:[ ']*),?+ */g;
@@ -176,13 +186,17 @@ sub do_file {
                         #print "Var: $_\n";
                         ($varName) = quotemeta($_);
                         ($keyName) = $_ =~ s/\$(.+) *$/$1_$varCount/r;
+                        #print "VarName: $varName\n";
+                        #print "KeyName1: $keyName\n";
+                        $keyName = $keyName =~ s/[^A-Za-z0-9_]/_/gr;
+                        #print "KeyName2: $keyName\n";
                         $line = $line =~ s/(\$$sqlVar.*?)([' ]*+)?$varName([' ]*)/$1 :$keyName/gr;
                         $array[$i] = $line;
                         push @keyNames, $keyName;
                         push @varNames, $_;
                     }
                     $tmp = join ", ", @vars;
-                    if($i < 2200) {
+                    if($i > $debug) {
                         #print "$sqlVar Test Vars:$i $tmp\n";
                     }
 
@@ -190,15 +204,15 @@ sub do_file {
             }else {
                 print "NO IDEA $line\n";
             }
-            if($line =~ /(?:\$([^ ]+)?(?: *= *))?mysql_query\( *\$$sqlVar/i) {
-                if($i< 2300) {
-                    #print "Query Line $i $line\n";
+            if($line =~ /(?:\$([^ ]+)?(?: *= *))?mysql_query\( *\$$sqlVar *\)/i) {
+                if($i > $debug) {
+                    print "Query Line $i $line\n";
                 }
                 ($resultsVar) = $1;
                 $searchSql = "\\\$$sqlVar";
                 my ($numInputs) = scalar @varNames;
                 $inputsName = '$pdo_inputs_'.($i+3+$numInputs);
-                $line = $line =~ s/mysql_query\( *$searchSql *\)/pdo_query(\$$sqlVar,$inputsName)/r;
+                $line = $line =~ s/mysql_query\( *$searchSql *\)/pdo_query(\$$sqlVar, $inputsName)/r;
                 $array[$i] = $line;
 
 
@@ -220,6 +234,8 @@ sub do_file {
                 #$tmp = join "\n", @inputArray;
                 splice(@array,$i,0,@inputArray);
                 $inputsDone = 1;
+                #if($sqlType ne
+                #$sqlType = '';
 
                 #print "$resultsVar\n $i $line\n";
                 #print "INPUTStr: $tmp\n";
@@ -227,6 +243,7 @@ sub do_file {
                 ($i)= $i+$numInputs+2;
                 ($queryLine) = $i+1;
                 $pdoRowVar = "\$pdo_row_$queryLine";
+                #print "PDO ROW VAR: $pdoRowVar\n";
                 if($sqlType ne 'select') {
                     print "EXIT NO SEL $i $line\n";
                     last;
@@ -239,20 +256,23 @@ sub do_file {
             print "EXIT SAME RS VAR OLD: $queryLine NEW:$i $line\n";
             last;
         }else{
-            if($line =~ /mysql_result\( *\$$resultsVar/i) {
-                #print "result $resultsVar\n";
-                $line = $line =~ s/mysql_result\( *\$$resultsVar *,[^,]+, *(["'][^"']+["']) *\);/$pdoRowVar\[$1\];/r;
+            if($line =~ /mysql_result\( *\$$resultsVar *,/i) {
+                #print "FETCH$i $fetch result $resultsVar\n";
+                #print "$line\n";
+                $line = $line =~ s/mysql_result\( *\$$resultsVar *,[^,]+, *(["'][^"']+["']) *\)/$pdoRowVar\[$1\]/r;
+                #print "$line\n";
                 $array[$i] = $line;
-                if($fetch == 0) {
+                if($fetch == 0 && $pdoRowVar) {
                     $fetch = 1;
                     $pdoFetch = "$spaces$pdoRowVar = pdo_fetch_assoc(\$$resultsVar);";
                     splice(@array,$i,0,$pdoFetch);
                     $i++;
                 }
             }elsif($line =~ /\$([^ =)]+) *= *mysql_num_rows\( *\$$resultsVar *\);/) {
-                #print "ROW $line\n";
+                #print "ROW$i $line\n";
                 $rowsVar = $1;
-                $line = $line =~ s/mysql_num_rows/pdo_num_rows/gir;
+                #print "ROWVAR $rowsVar\n";
+                $line = $line =~ s/(?:if\(\$$resultsVar\) *)?\$$rowsVar *= *mysql_num_rows/\$$rowsVar = pdo_num_rows/gir;
                 $array[$i] = $line;
             }elsif($line =~ /for\(.*?< *\$$rowsVar.*\) *\{/i && length $rowsVar > 0 && $fetch == 0 && length $pdoRowVar > 0) {
                 #print "FOR $i $line\n";
@@ -277,21 +297,27 @@ sub do_file {
     #print "\n";
 
     untie @array;
-    print "LINE: $queryLine \n";
-    return $queryLine;
+    #print "LINE: $queryLine \n";
+    #$queryLine = $queryLine == 0 ? $queryLine : $queryLine + 1;
+    #print "LINE2: $queryLine \n";
+    #return $queryLine;
+    $sqlLine = $sqlLine == 0 ? $sqlLine : $sqlLine + 1;
+    return $sqlLine;
 }
 
 sub clear_globals {
+    print "GLOBALS\n";
     $sqlVar = '';
     $spaces = '';
     $sqlType = '';
-    #$resultsVar = '';
+    $resultsVar = '';
     $pdoRowVar = '';
     $sql = 0;
     $fetch = 0;
     $varCount = 0;
     $inputsDone = 0;
     $queryLine = 0;
+    $sqlLine = 0;
     $insVals = 0;
     @array = ();
     @varNames = ();
