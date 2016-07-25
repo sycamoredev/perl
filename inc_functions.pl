@@ -5,7 +5,7 @@ my $file = $ARGV[0];
 my $type = $ARGV[1];
      
 
-# Open $file into $phpInput buffer
+# Open target file($file) into $phpInput buffer
 open my $phpInput, '<', $file or die "can't open $file: $!\n";
 my @incFiles;
 
@@ -17,6 +17,7 @@ my @skipFiles = ('pdo.inc','crumb.inc','tab.inc', 'array.inc', 'alphabetbar.inc'
 while (<$phpInput>) {
     chomp;
     # Add required filenames to @incFiles array
+    # example: require_once('classes.inc');
     if(/require_once\(["'] *([A-Za-z\._0-9\/-]+\.inc) *["']\);/g) {
         # $1-$9 are automatically populated by regex groups in matching operations
         if(!($1 ~~ @skipFiles)) {
@@ -24,6 +25,7 @@ while (<$phpInput>) {
         }
     }
 }
+# Get length of file.
 # "$." contains the current line number of the last filehandle accessed
 $totalLines = $.;
 close $phpInput;
@@ -32,8 +34,8 @@ close $phpInput;
 my @incFunctions;
 
 
-# Skip specific functions that are commonly used
-# Add more if necessary.
+# Skip specific functions that are commonly used,
+# add more if necessary.
 my @skipFunctions = ('Display', 'htmlQuotes');
 
 # "$|" forces the STDOUT buffer to flush before receiving a newline character
@@ -44,7 +46,7 @@ print "Searching $totalInc '.inc' files...0/$totalInc";
 
 my $count = 0;
 foreach(@incFiles) {
-    # Backspace correct number of times
+    # Move cursor back correct number of characters
     print ("\b" x (length($count) + 1 + length($totalInc)));
 
     # Print updated numbers
@@ -73,9 +75,11 @@ print "\nFound ".scalar @incFunctions." unique function names.\n";
 $| = 1;
 print "Searching $file for matches...0/$totalLines";
 
+# foundFunctions will contain the line numbers and function names of any
+# .inc functions that are matched in the .php file
 my @foundFunctions;
 
-# open ".php" file again
+# open target file again
 open my $phpInput2, '<', $file or die "can't open $file: $!";
 while (<$phpInput2>) {
     chomp;
@@ -86,9 +90,17 @@ while (<$phpInput2>) {
     print ("\b" x (length($.-1) + 1 + length($totalLines)));
     print (($.)."/$totalLines");
 
-    # check current line against each inc function
+    # check current line against each inc function(case insensitive)
     foreach(@incFunctions) {
-        if($line =~ /\b($_) *\(/i) {
+        # Example: current function name =  getData
+        # Matches:
+        #   getData(
+        #   getdata(
+        # Doesn't match:
+        #   getData (
+        #   nowGetData(
+        #   getData2(
+        if($line =~ /\b$_\(/i) {
             if($type eq 'txt') {
                 push @foundFunctions, "$.: $_";
             }else{
