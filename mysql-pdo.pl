@@ -1,9 +1,14 @@
 #!/usr/bin/perl
 use Tie::File;
 
+my $start_run = time();
+
 my @files;
+
+# if multiple args, assume list of files
 if ( @ARGV > 1 ) {
     @files = @ARGV;
+# if one arg, assume filename/pattern, e.g. "students.php" or "s*.php"
 } elsif(@ARGV == 1) {
     @files = glob "$ARGV[0]";
 } else {
@@ -16,7 +21,7 @@ if(@files < 1) {
     exit;
 }
 
-# Globals
+# Initialize globals
 my $sqlVar = '';
 my $spaces = '';
 my $sqlType = '';
@@ -35,26 +40,43 @@ my @varNames;
 my @keyNames;
 my @vars;
 
-my $debug = 0;
+# operators
+my $ops = "[<>!=]{1,2}|LIKE";
 
-my $count = 1;
+# start converting file at line X
 my $jump = 0;
+#$jump = 2483;
 
+my $count = 0;
+
+# force perl to flush the STDOUT(standard output) buffer
+$| = 1;
 foreach $file(@files){
-    print "$count Checking $file\n";
+    print ++$count." Checking $file...";
     do {
         clear_globals();
+        # $jump is returned when a query has been found and modified
+        # if $jump == 0, no queries were found to convert, so the process is complete
+        #print "\nJUMP $jump\n";
         $jump = do_file($file,$jump);
-        print "JUMP $jump\n";
     }while($jump > 0);
+    print "Done\n";
 }
+$| = 0;
+# return buffering to it's normal state
+
+$end_run = time();
+$run_time = $end_run - $start_run;
+print "Job took $run_time seconds\n";
+my $line = '';
 
 sub do_file {
     $start = $_[1];
 
-    print "HELLO $start\n";
-    print $array[$start];
-    #clear_globals();
+    #print "Start line: $start\n";
+    #print $array[$start];
+
+    # read lines of file into array, modifying array modifies file
     tie @array, 'Tie::File', $_[0] or die "Can't open $_[0] $!\n";
     $stop = scalar(@array);
     #print "STOP: $stop\n";
@@ -62,102 +84,89 @@ sub do_file {
 
     #print "\n";
 
-    #$stop = 4030;
+    # $stop can be set manually for debugging
+    # To adjust the $start var, adjust the default value for $jump instead
+    #$stop = 2750;
 
     for(my $i=$start; $i<$stop; $i++) {
-        my $line = $array[$i];
-        #print "LINE $line\n";
+        $line = $array[$i];
         $lineNum = $i + 1;
-        if($line =~ /^([ \s\t]*)(\/\/|\/\*)/) {
-            if( $lineNum > 3400) {
-                print "COMMENTED LINE $lineNum $line\n";
-            }
 
-            next;
-        }
-        if($line =~ /^([ \s\t]*)$/) {
-            if( $lineNum > 3400) {
-                print "BLANK LINE $lineNum $line\n";
-            }
+        #skip commented lines
+        $line =~ /^([ \s\t]*)(\/\/|\/\*)/ and next;
 
-            next;
-        }
-        if($line =~ /^([ \s\t]*)\$([^ =]+) *= *" *(select|update|insert|delete)[ "]/i && $sqlLine == 0) {
-            #if($lineNum > $debug) {
-                print "MATCH $lineNum\n";
-                print "$2 || $3 || $line\n";
-            #}
+        $line = $line =~ s/mysql_real_escape_string\( *(\$[^ ]+) *\)/$1/ri;
 
+
+        # find start of SQL statement
+        # Example: $sql =  "SELECT ....
+        if($line =~ /^([ \s\t]*+)\$([^ =]+) *= *" *(select|update|insert|delete)[ "]/i && $sqlLine == 0) {
+
+            # record indentation
             $spaces = $1;
+
+            # save sql variable(usually "sql")
             $sqlVar = $2;
+
+            # sql type(select, update, etc) cast as lowercase
             $sqlType = lc $3;
+
             if(length $sqlVar > 0 && length $sqlType > 0) {
+                # set flags
                 $sql = 1;
                 $sqlLine = $i;
             }
+
+            # if type is insert, but uses 'set' syntax like update, treat as update
             if($sqlType == 'insert') {
                 if($line =~ /set/i || $array[$i+1] =~ /set/i) {
                     $sqlType = 'update';
                 }
             }
         }
+
+        # if sql statement as been found and pdo $inputs array hasn't been created
         if($sql == 1 && $inputsDone == 0) {
-            #print "SQL 1 Inputs 0 $i $line\n";
-            
-            if($sqlType =~/^select$/) {
-                ($line) = $line =~ s/\\" *(\$.+?) *\\"/$1/gr;
-                if($lineNum > $debug) {
-                    #print "SQLVAR $lineNum $sqlVar $line\n";
-                }
-                if($line =~ /$sqlVar *\.?= *"(.+(?:[<>!=]++|LIKE).+) *";/i) {
-                    #print "CONDITIONAL $1\n";
-                    (@vars) = $1 =~ m/([A-Za-z0-9_]+) *(?:[<>!=]+|LIKE)(?:[ ']*)(\$[A-Za-z0-9_\->%]+)(?:[ ']*) */g;
-                    $tmp = join ", ", @vars;
+            # remove escaped quotes
+            $line = $line =~ s/\\"//gr;
+            if($sqlType =~ /^(update|delete|select)$/){
+                # matches lines that contain the sql variable and at least 
+                # one operator(<>=!|LIKE).                 #
+                # Examples:
+                # $sql .= "Column = $val ";
+                # $sql .= "ColA = '$val1' AND ColB != $val2 ";
+                if($line =~ /$sqlVar *\.?= *"(.+(?:$ops).+) *";/i) {
+                    # Capture group will be stored in $1 automatically.
+                    # Examples:
+                    # Column = $val
+                    # ColA = '$val1' AND ColB != $val2
+
+                    # Store matches for columns and variable values in array
+                    # Examples:
+                    # [Column, val]
+                    # [ColA, val1, ColB, val2]
+                    @vars = $1 =~ m/([A-z0-9_]+) *(?:$ops)(?:[ ']*+)(%?\$[A-z0-9_\$\->%]+)(?:[ ']*),? */g;
+
+                    # loop through array
                     for(my $x=0; $x<@vars; $x++) {
+                        # skip column elements(indicies 0,2,4,6...)
                         if($x % 2 == 1) {
-                            $line = $line =~ s/\\"//gr;
-                            #print "LINE $line\n";
-                            #print "VAR: $vars[$x]| COL: $vars[$x-1]|\n";
+                            # use $varCount to guarantee unique keys
                             $varCount++;
-                            ($varName) = quotemeta $vars[$x];
-                            ($keyName) = $vars[$x-1] =~ s/^\$?(.+) */$1_$varCount/r;
-                            $keyName = $keyName =~ s/[^A-Za-z0-9_]/_/gr;
-                            #$oldKey = $vars[$x-1];
-                            #print "VARNAME: $varName| COL: $keyName| $oldKey\n";
-                            $line = $line =~ s/([<>!=]++|LIKE)([' ]*+)?$varName([' ]*)/$1 :$keyName /gr;
-                            #print "NEWLINE $line\n";
+                            # escape all non-word characters(alphanumeric + underscore)
+                            $varName = quotemeta $vars[$x];
+                            # store "<column name>_$varCount" as $keyName
+                            $keyName = $vars[$x-1] =~ s/\$?(.+) *$/$1_$varCount/r;
+
+                            # replace non-word characters with underscores(for pdo compliance)
+                            $keyName = $keyName =~ s/[^A-z0-9_]/_/gr;
+
+                            # rewrite line in pdo format
+                            # Example: $sql .= "ColA = :ColA_1 AND ColB != :ColB_2 ";
+                            $line = $line =~ s/($vars[$x-1] *$ops) *'?$varName *'?(,)? */$1 :$keyName$2 /gr;
                             $array[$i] = $line;
-                            push @keyNames, $keyName;
-                            push @varNames, $vars[$x];
-                        }
-                    }
-                }
-            }elsif($sqlType =~ /^(update|delete)$/){
-                #print "UPDATE/DELETE $i: $sqlType \n";
-                ($line) = $line =~ s/\\" *(\$.+?) *\\"/$1/gr;
-                if($line =~ /$sqlVar *\.?= *"(.+(?:[<>!=]++|LIKE).+) *";/i) {
-                    if($lineNum > $debug) {
-                        #print "$1\n";
-                    }
-                    (@vars) = $1 =~ m/([A-Za-z0-9_]+) *(?:[<>!=]++|LIKE)(?:[ ']*)(\$[A-Za-z0-9_\->%]+)(?:[ ']*),? */g;
-                    $tmp = join ", ", @vars;
-                    if($lineNum > $debug) {
-                        #print "$sqlVar Test Vars:$lineNum $tmp\n";
-                    }
-                    for(my $x=0; $x<@vars; $x++) {
-                        if($x % 2 == 1) {
-                            $line = $line =~ s/\\"//gr;
-                            #print "LINE $line\n";
-                            #print "VAR: $vars[$x]| COL: $vars[$x-1]|\n";
-                            $varCount++;
-                            ($varName) = quotemeta $vars[$x];
-                            ($keyName) = $vars[$x-1] =~ s/\$?(.+) *$/$1_$varCount/r;
-                            $keyName = $keyName =~ s/[^A-Za-z0-9_]/_/gr;
-                            #print "VARNAME: $varName| COL: $keyName| \n";
-                            #print "OLDLINE $lineNum $line\n";
-                            $line = $line =~ s/([<>!=]++|LIKE)([' ]*+)?$varName([' ]*)/$1 :$keyName /gr;
-                            #print "NEWLINE $lineNum $testLine\n";
-                            $array[$i] = $line;
+
+                            # append key and vars to respective arrays
                             push @keyNames, $keyName;
                             push @varNames, $vars[$x];
                         }
@@ -165,157 +174,193 @@ sub do_file {
                 }
 
             }elsif($sqlType =~ /^insert$/){
-                #print "INSERT \n";
-                ($line) = $line =~ s/\\" *(\$.+?) *\\"/$1/gr;
+                # trim line to only capture inside quotation marks
                 if($line =~ /$sqlVar *\.?= *"(.*)";/i) {
-                    ($thisLine) = $1;
+                    # save match in $thisLine
+                    $thisLine = $1;
+
+                    # if line contains 'values' keyword plus parenthesis, find variables
+                    # Example:
+                    # $sql .= " )VALUES( $var1, '$var2', 0, 'yes', $var3, ";
                     if($thisLine =~ /values *\(/i) {
-                        #print "THIS LINE1: $thisLine\n";
-                        #($testLine) = $thisLine =~ m/values(.+)/i;
-                        #print "THIS LINE: $testLine\n";
-                        (@vars) = $thisLine =~ m/(?:[ ']*)(\$[A-Za-z0-9_\->]+)(?:[ ']*),?+ */g;
-                        if($lineNum > $debug) {
-                            #print "VALUESLINE $line \n";
-                            #print "TESTLINE  $testLine \n";
-                        }
-                        #print "FOUND VALUE(\n";
+                        # match variables, exclude apostrophes
+                        # Above example matches:
+                        # var1  
+                        # var2  
+                        # var3  
+                        @vars = $thisLine =~ m/(?:[ ']*)(\$[A-z0-9_\$\->]+)(?:[ ']*),?+ */g;
+                        # set flag so we know we're in the 'values' section of query
                         $insVals = 1;
+                    # sometimes values is alone on a line
+                    # $sql .= "VALUES";
+                    # $sql .= "($var1, $var2...
+                    # set 'values' flag and skip to next line
                     }elsif($thisLine =~ /values *\(? *$/i) {
-                        #print "FOUND VALUE $lineNum $line\n";
                         $insVals = 1;
                         next;
+                    # if already in 'values' section, match vars
                     }elsif($insVals == 1) {
-                        if($lineNum > $debug) {
-                            #print "Searching Values $thisLine\n";
-                        }
-                        (@vars) = $thisLine =~ m/(?:[ ']*)(\$[A-Za-z0-9_\->]+)(?:[ ']*),?+ */g;
+                        @vars = $thisLine =~ m/(?:[ ']*)(\$[A-z0-9_\$\->]+)(?:[ ']*),?+ */g;
                     }
+                    # loop through vars
                     foreach(@vars) {
+                        # use $varCount to guarantee unique keys
                         $varCount++;
-                        #print "Var: $_\n";
-                        ($varName) = quotemeta($_);
-                        ($keyName) = $_ =~ s/\$(.+) *$/$1_$varCount/r;
-                        #print "VarName: $varName\n";
-                        #print "KeyName1: $keyName\n";
-                        $keyName = $keyName =~ s/[^A-Za-z0-9_]/_/gr;
-                        #print "KeyName2: $keyName\n";
+                        # escape all non-word characters(alphanumeric + underscore)
+                        $varName = quotemeta($_);
+                        # store "<varname>_$varCount" as $keyName
+                        $keyName = $_ =~ s/\$(.+) *$/$1_$varCount/r;
+                        # replace non-word characters with underscores(for pdo compliance)
+                        $keyName = $keyName =~ s/[^A-z0-9_]/_/gr;
+                        # rewrite line in pdo format
+                        # $sql .= " )VALUES( $varA, '$varB', 0, 'yes', $varC, $obj->prop ";
+                        # becomes
+                        # $sql .= " )VALUES( :varA_1, :varB_2, 0, 'yes', :varC_3, :obj__prop ";
                         $line = $line =~ s/(\$$sqlVar.*?)([' ]*+)?$varName([' ]*)/$1 :$keyName/gr;
                         $array[$i] = $line;
+                        # append key and vars to respective arrays
                         push @keyNames, $keyName;
                         push @varNames, $_;
                     }
-                    $tmp = join ", ", @vars;
-                    if($lineNum > $debug) {
-                        #print "$sqlVar Test Vars:$lineNum $tmp\n";
-                    }
 
                 }
-            }else {
-                print "NO IDEA $line\n";
             }
+            # if line contains mysql_query with our current $sqlVar
             if($line =~ /(?:\$([^ ]+)?(?: *= *))?mysql_query\( *\$$sqlVar *\)/i) {
-                if($lineNum > $debug) {
-                    print "Query Line $lineNum $line\n";
-                }
-                ($resultsVar) = $1;
+                # capture results var
+                # Example:
+                # $rs = mysql_query($sql);
+                # $resultsVar now contains 'rs'
+                $resultsVar = $1;
+
+                # prepend escaped dollar sign for regex
                 $searchSql = "\\\$$sqlVar";
-                my ($numInputs) = scalar @varNames;
+
+                # retrieve number of variables found in previous block
+                my $numInputs = scalar @varNames;
+
+                # build name for inputs array
+                # $pdo_inputs_<line number of pdo_query>
                 $inputsName = '$pdo_inputs_'.($lineNum+2+$numInputs);
+                # replace mysql_query with pdo_query plus pdo inputs variable
                 $line = $line =~ s/mysql_query\( *$searchSql *\)/pdo_query(\$$sqlVar, $inputsName)/r;
                 $array[$i] = $line;
 
-
-
                 my $inputStr;
                 my @inputArray;
-                push @inputArray, "$spaces$inputsName = Array(";
+                # build inputs array
+                push @inputArray, "$spaces$inputsName = array(";
                 for(my $n=0; $n<$numInputs; $n++) {
                     $inputStr = "$spaces    \"$keyNames[$n]\" => \"$varNames[$n]\"";
+                    # don't include comma on the last item
                     if($n+1 < $numInputs) {
-                        push @inputArray, "$inputStr,";
-                    }else{
-                        push @inputArray, "$inputStr";
+                        $inputStr = "$inputStr,";
                     }
+                    push @inputArray, "$inputStr";
                 }
 
+
+                # close array
                 push @inputArray, "$spaces);";
 
-                #$tmp = join "\n", @inputArray;
+                # splice inputs array into main file
                 splice(@array,$i,0,@inputArray);
+                # inputs flag
                 $inputsDone = 1;
-                #if($sqlType ne
-                #$sqlType = '';
 
-                #print "$resultsVar\n $lineNum $line\n";
-                #print "INPUTStr: $tmp\n";
-
-                ($i)= $i+$numInputs+2;
-                ($queryLine) = $i+1;
+                # advance $i to account for the added lines
+                $i += @inputArray;
+                $queryLine = $i + 1;
                 $pdoRowVar = "\$pdo_row_$queryLine";
-                #print "PDO ROW VAR: $pdoRowVar\n";
+                # if not a 'select' statement, end iteration and return to 'while' loop
                 if($sqlType ne 'select') {
-                    print "EXIT NO SEL $lineNum $line\n";
                     last;
                 }else{
-                    print "INPUTS ENTERED $lineNum $queryLine $line\n";
                     next;
                 }
             }
+        # if input array has already been constructed and we
+        # find a mysql_query line with the same results variable
+        # we can assume we've completed everything for the current
+        # sql statement and move on to the next
         }elsif($line =~ /\$$resultsVar *= *mysql_query\(/) {
-            print "EXIT SAME RS VAR OLD: $queryLine NEW:$lineNum $line\n";
             last;
         }else{
-            if($line =~ /mysql_result\( *\$$resultsVar *,/i) {
-                print "FETCH$lineNum $fetch result $resultsVar\n";
-                print "$line\n";
+            # match mysql_result lines for current results variable
+            # Example:
+            # $val = mysql_result($rs, $i, 'Value');
+            if($line =~ /^([ \s\t]*+)(?:.+?)mysql_result\( *\$$resultsVar *,/i) {
+                $spaces = $1;
+                # convert mysql_result lines to $pdo_row_<queryline>['...'] syntax
+                # Example:
+                # $val = pdo_row_156['Value'];
                 $line = $line =~ s/mysql_result\( *\$$resultsVar *,[^,]+, *(["'][^"']+["']) *\)/$pdoRowVar\[$1\]/r;
-                #print "$line\n";
+                # NOTE: Column names in SQL are case-insensitive, meaning
+                # "SELECT Lastname" would match a column named "LASTNAME" in the database
+                # Similarly, $lname = mysql_result($rs, $i, "lastname"); would match that 
+                # same column in the result set.
+                # Our PDO results come back in the form of an associative array, which
+                # means the selected column must match the key exactly.
+                # "SELECT Lastname" will only work with $pdo_row['Lastname'];
+                # This difference will cause problems in places where the selected column differs
+                # from the name used in the call to mysql_result
+
                 $array[$i] = $line;
+
+                # if no 'pdo_fetch_assoc()' line has been created for this query
+                # This will be the case for single result queries, i.e. those without
+                # a for loop.
                 if($fetch == 0 && $pdoRowVar) {
                     $fetch = 1;
                     $pdoFetch = "$spaces$pdoRowVar = pdo_fetch_assoc(\$$resultsVar);";
                     splice(@array,$i,0,$pdoFetch);
                     $i++;
                 }
+            # if mysql_num_rows function is found for current $resultsVar
+            # Example:
+            # $rsc = mysql_num_rows($rs);
             }elsif($line =~ /\$([^ =)]+) *= *mysql_num_rows\( *\$$resultsVar *\);/) {
-                #print "ROW$lineNum $line\n";
+                # match "rsc" from example
                 $rowsVar = $1;
-                #print "ROWVAR $rowsVar\n";
-                $line = $line =~ s/(?:if\(\$$resultsVar\) *)?\$$rowsVar *= *mysql_num_rows/\$$rowsVar = pdo_num_rows/gir;
+                # replace mysql_num_rows with pdo_num_rows
+                # Remove "if($resultsVar)" if it exists
+                # Example:
+                # if($rs) $rsc = mysql_num_rows($rs);
+                # $rsc = pdo_num_rows($rs);
+                $line = $line =~ s/(if\( *\$$resultsVar *\) *) *\$$rowsVar *= *mysql_num_rows/\$$rowsVar = pdo_num_rows/gir;
                 $array[$i] = $line;
-            }elsif($line =~ /for\(.*?< *\$$rowsVar.*\) *\{/i && length $rowsVar > 0 && $fetch == 0 && length $pdoRowVar > 0) {
-                #print "FOR $lineNum $line\n";
-                #print "ROWSVAR $rowsVar\n";
-                #print "Query $queryLine\n";
+            # match for loop over current row variable
+            # Example: 
+            # for($i=0; $i < $rsc; $i++) {
+            # Also make sure $rowsVar and $pdoRowVar are populated, and
+            # a pdo_fetch_assoc line has not been added yet
+            }elsif($line =~ /for\(.*?< *\$$rowsVar.*\) *\{/i && length $rowsVar > 0 && $fetch == 0 && length $pdoRowVar > 0 && length $resultsVar > 0) {
                 $fetch = 1;
-                #$line = $line =~ s/for\(.*?< *\$$rowsVar.*\) *\{/while(\$$pdoRowVar = pdo_fetch_assoc(\$$resultsVar)) {/r;
+                # convert 'for' loop to while loop
+                # Example:
+                # for($i=0; $i < $rsc; $i++) {
+                # while($pdo_row_265 = pdo_fetch_assoc($rs)) {
                 $line = $line =~ s/for\(.*?< *\$$rowsVar.*\) *\{/while($pdoRowVar = pdo_fetch_assoc(\$$resultsVar)) {/r;
                 $array[$i] = $line;
             }else{
+                # convert mysql functions to pdo
                 $line = $line =~ s/mysql_insert_id/pdo_insert_id/ri;
                 $line = $line =~ s/mysql_fetch_assoc(\( *\$$resultsVar *\))/pdo_fetch_assoc$1/ri;
                 $array[$i] = $line;
             }
         }
     }
-    #print "COLS: ";
-    #print join(", ", @keyNames);
-    #print "\n";
-    #print "VALS: ";
-    #print join(", ", @varNames);
-    #print "\n";
 
+    # untie array(close the file)
     untie @array;
-    #print "LINE: $queryLine \n";
-    #$queryLine = $queryLine == 0 ? $queryLine : $queryLine + 1;
-    #print "LINE2: $queryLine \n";
-    #return $queryLine;
+
+    # direct next iteration of the while loop where to start in the file
+    # This should be one line after select/update/delete/insert was found
     $sqlLine = $sqlLine == 0 ? $sqlLine : $sqlLine + 1;
     return $sqlLine;
 }
 
 sub clear_globals {
-    print "GLOBALS\n";
     $sqlVar = '';
     $spaces = '';
     $sqlType = '';
@@ -333,6 +378,3 @@ sub clear_globals {
     @keyNames = ();
     @vars = ();
 }
-
-     
-
