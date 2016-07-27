@@ -45,14 +45,17 @@ my $ops = "[<>!=]{1,2}|LIKE";
 
 # start converting file at line X
 my $jump = 0;
-#$jump = 2483;
+#$jump = 3690;
 
 my $count = 0;
 
 # force perl to flush the STDOUT(standard output) buffer
 $| = 1;
 foreach $file(@files){
-    print ++$count."/".@files." Checking $file...";
+    if(@files > 1) {
+        print ++$count."/".@files." ";
+    }
+    print "Converting $file...";
     do {
         clear_globals();
         # $jump is returned when a query has been found and modified
@@ -77,7 +80,7 @@ sub do_file {
 
     # read lines of file into array, modifying array modifies file
     tie @array, 'Tie::File', $_[0] or die "Can't open $_[0] $!\n";
-    $stop = scalar(@array);
+    $stop = @array;
     #print "STOP: $stop\n";
     #print $array[$stop];
 
@@ -85,7 +88,7 @@ sub do_file {
 
     # $stop can be set manually for debugging
     # To adjust the $start var, adjust the default value for $jump instead
-    #$stop = 2750;
+    #$stop = 4055;
 
     for(my $i=$start; $i<$stop; $i++) {
         $line = $array[$i];
@@ -99,7 +102,8 @@ sub do_file {
 
         # find start of SQL statement
         # Example: $sql =  "SELECT ....
-        if($line =~ /^([ \s\t]*+)\$([^ =]+) *= *" *(select|update|insert|delete)[ "]/i && $sqlLine == 0) {
+        if($line =~ /^([ \s\t]*+)\$([^ =]+) *= *" *(select|update|insert|delete)[ "]/i && $sql == 0) {
+
 
             # record indentation
             $spaces = $1;
@@ -109,6 +113,7 @@ sub do_file {
 
             # sql type(select, update, etc) cast as lowercase
             $sqlType = lc $3;
+
 
             if(length $sqlVar > 0 && length $sqlType > 0) {
                 # set flags
@@ -124,8 +129,16 @@ sub do_file {
             }
         }
 
+
         # if sql statement as been found and pdo $inputs array hasn't been created
         if($sql == 1 && $inputsDone == 0) {
+            # Queries broken into if/else statements that use the same 'mysql_query()'
+            # call can cause problems for queries later in the file, this is to help prevent that
+            if($line =~ /^([ \s\t]*+)\$([^ =]+) *\.= *".+:.+_\d/i) {
+                $sqlLine = $i;
+                last;
+            }
+
             # remove escaped quotes
             $line = $line =~ s/\\"//gr;
             if($sqlType =~ /^(update|delete|select)$/){
@@ -144,7 +157,7 @@ sub do_file {
                     # Examples:
                     # [Column, val]
                     # [ColA, val1, ColB, val2]
-                    @vars = $1 =~ m/([A-z0-9_]+) *(?:$ops)(?:[ ']*+)(%?\$[A-z0-9_\$\->%]+)(?:[ ']*),? */g;
+                    @vars = $1 =~ m/([A-z0-9_]+) *(?:$ops)(?:[ ']*+)(%?\{? *?\$[A-z0-9_\$\->'\[\]]+ *?%?\}?)(?:[ ']*)/g;
 
                     # loop through array
                     for(my $x=0; $x<@vars; $x++) {
@@ -189,7 +202,7 @@ sub do_file {
                         # var1  
                         # var2  
                         # var3  
-                        @vars = $thisLine =~ m/(?:[ ']*)(\$[A-z0-9_\$\->]+)(?:[ ']*),?+ */g;
+                        @vars = $thisLine =~ m/(?:[ ']*)(\{?\$[A-z0-9_\$\->'\[\]]+\}?)(?:[ ']*),?+ */g;
                         # set flag so we know we're in the 'values' section of query
                         $insVals = 1;
                     # sometimes values is alone on a line
@@ -201,7 +214,7 @@ sub do_file {
                         next;
                     # if already in 'values' section, match vars
                     }elsif($insVals == 1) {
-                        @vars = $thisLine =~ m/(?:[ ']*)(\$[A-z0-9_\$\->]+)(?:[ ']*),?+ */g;
+                        @vars = $thisLine =~ m/(?:[ ']*)(\{?\$[A-z0-9_\$\->'\[\]]+\}?)(?:[ ']*),?+ */g;
                     }
                     # loop through vars
                     foreach(@vars) {
@@ -210,9 +223,10 @@ sub do_file {
                         # escape all non-word characters(alphanumeric + underscore)
                         $varName = quotemeta($_);
                         # store "<varname>_$varCount" as $keyName
-                        $keyName = $_ =~ s/\$(.+) *$/$1_$varCount/r;
                         # replace non-word characters with underscores(for pdo compliance)
-                        $keyName = $keyName =~ s/[^A-z0-9_]/_/gr;
+                        $keyName = $_ =~ s/(\[|\]|[^A-z0-9])+/_/gr;
+                        $keyName = $keyName =~ s/(^_*|_*$)//gr;
+                        $keyName = $keyName."_$varCount";
                         # rewrite line in pdo format
                         # $sql .= " )VALUES( $varA, '$varB', 0, 'yes', $varC, $obj->prop ";
                         # becomes
@@ -229,12 +243,14 @@ sub do_file {
                 }
             }
             # if line contains mysql_query with our current $sqlVar
-            if($line =~ /(?:\$([^ ]+)?(?: *= *))?mysql_query\( *\$$sqlVar *\)/i) {
+            if($line =~ /(?:\$([^ ]+)(?: *= *))?mysql_query\( *\$$sqlVar *\)/i) {
                 # capture results var
                 # Example:
                 # $rs = mysql_query($sql);
                 # $resultsVar now contains 'rs'
-                $resultsVar = $1;
+                if(length $1 > 0) {
+                    $resultsVar = $1;
+                }
 
                 # prepend escaped dollar sign for regex
                 $searchSql = "\\\$$sqlVar";
@@ -369,7 +385,7 @@ sub do_file {
 
     # direct next iteration of the while loop where to start in the file
     # This should be one line after select/update/delete/insert was found
-    $sqlLine = $sqlLine == 0 ? $sqlLine : $sqlLine + 1;
+    $sqlLine = $sqlLine == 0 ? $sqlLine : $sqlLine + 2;
     return $sqlLine;
 }
 
