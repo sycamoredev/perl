@@ -52,12 +52,11 @@ my $count = 0;
 # force perl to flush the STDOUT(standard output) buffer
 $| = 1;
 foreach $file(@files){
-    print ++$count." Checking $file...";
+    print ++$count."/".@files." Checking $file...";
     do {
         clear_globals();
         # $jump is returned when a query has been found and modified
         # if $jump == 0, no queries were found to convert, so the process is complete
-        #print "\nJUMP $jump\n";
         $jump = do_file($file,$jump);
     }while($jump > 0);
     print "Done\n";
@@ -164,6 +163,8 @@ sub do_file {
                             # rewrite line in pdo format
                             # Example: $sql .= "ColA = :ColA_1 AND ColB != :ColB_2 ";
                             $line = $line =~ s/($vars[$x-1] *$ops) *'?$varName *'?(,)? */$1 :$keyName$2 /gr;
+                            # handle vars that are concatenated into the SQL string
+                            $line = $line =~ s/" *\. *:$keyName *\. *"/".":$keyName"."/gr;
                             $array[$i] = $line;
 
                             # append key and vars to respective arrays
@@ -217,6 +218,8 @@ sub do_file {
                         # becomes
                         # $sql .= " )VALUES( :varA_1, :varB_2, 0, 'yes', :varC_3, :obj__prop ";
                         $line = $line =~ s/(\$$sqlVar.*?)([' ]*+)?$varName([' ]*)/$1 :$keyName/gr;
+                        # handle vars that are concatenated into the SQL string
+                        $line = $line =~ s/" *\. *:$keyName *\. *"/".":$keyName"."/gr;
                         $array[$i] = $line;
                         # append key and vars to respective arrays
                         push @keyNames, $keyName;
@@ -289,8 +292,7 @@ sub do_file {
             # match mysql_result lines for current results variable
             # Example:
             # $val = mysql_result($rs, $i, 'Value');
-            if($line =~ /^([ \s\t]*+)(?:.+?)mysql_result\( *\$$resultsVar *,/i) {
-                $spaces = $1;
+            if($line =~ /mysql_result\( *\$$resultsVar *,/i) {
                 # convert mysql_result lines to $pdo_row_<queryline>['...'] syntax
                 # Example:
                 # $val = pdo_row_156['Value'];
@@ -313,21 +315,25 @@ sub do_file {
                 if($fetch == 0 && $pdoRowVar) {
                     $fetch = 1;
                     $pdoFetch = "$spaces$pdoRowVar = pdo_fetch_assoc(\$$resultsVar);";
-                    splice(@array,$i,0,$pdoFetch);
+                    splice(@array,$queryLine,0,$pdoFetch);
                     $i++;
                 }
             # if mysql_num_rows function is found for current $resultsVar
             # Example:
             # $rsc = mysql_num_rows($rs);
-            }elsif($line =~ /\$([^ =)]+) *= *mysql_num_rows\( *\$$resultsVar *\);/) {
+            }elsif($line =~ /\$([^ =)]+) *= *mysql_num_rows\( *\$$resultsVar *\)/) {
                 # match "rsc" from example
                 $rowsVar = $1;
+
                 # replace mysql_num_rows with pdo_num_rows
-                # Remove "if($resultsVar)" if it exists
+                $line = $line =~ s/\$$rowsVar *= *mysql_num_rows\( *\$$resultsVar *\)/\$$rowsVar = pdo_num_rows(\$$resultsVar)/gir;
+
+                # Remove "if($resultsVar)" if it exists and there is no 'else' inline
                 # Example:
-                # if($rs) $rsc = mysql_num_rows($rs);
+                # if($rs) $rsc = pdo_num_rows($rs);
                 # $rsc = pdo_num_rows($rs);
-                $line = $line =~ s/(if\( *\$$resultsVar *\) *) *\$$rowsVar *= *mysql_num_rows/\$$rowsVar = pdo_num_rows/gir;
+                # No Match: if($rs) $rsc = pdo_num_rows($rs); else $msg = 'No Records';
+                $line = $line =~ s/^([ \s\t]*+)(if\( *\$$resultsVar *\) *)(\$$rowsVar *= *pdo_num_rows\(\$$resultsVar\);) *(?!else)$/$1$3/gir;
                 $array[$i] = $line;
             # match for loop over current row variable
             # Example: 
@@ -345,6 +351,13 @@ sub do_file {
             }else{
                 # convert mysql functions to pdo
                 $line = $line =~ s/mysql_insert_id/pdo_insert_id/ri;
+                $line = $line =~ s/mysql_error/pdo_error/ri;
+                $line = $line =~ s/mysql_fetch_array/pdo_fetch_assoc/ri;
+                # This handles num_rows functions that are not assigned to a value
+                # Example:
+                # if(mysql_num_rows($rs) {
+                # if(pdo_num_rows($rs) {
+                $line = $line =~ s/^([^=]+)mysql_num_rows/$1pdo_num_rows/ri;
                 $line = $line =~ s/mysql_fetch_assoc(\( *\$$resultsVar *\))/pdo_fetch_assoc$1/ri;
                 $array[$i] = $line;
             }
