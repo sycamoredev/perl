@@ -222,10 +222,12 @@ sub do_file {
                         $varCount++;
                         # escape all non-word characters(alphanumeric + underscore)
                         $varName = quotemeta($_);
-                        # store "<varname>_$varCount" as $keyName
                         # replace non-word characters with underscores(for pdo compliance)
+                        # brackets don't play nice, so they get their own category
                         $keyName = $_ =~ s/(\[|\]|[^A-z0-9])+/_/gr;
+                        # trim leading/trailing underscores
                         $keyName = $keyName =~ s/(^_*|_*$)//gr;
+                        # append $varCount to guarantee unique key
                         $keyName = $keyName."_$varCount";
                         # rewrite line in pdo format
                         # $sql .= " )VALUES( $varA, '$varB', 0, 'yes', $varC, $obj->prop ";
@@ -344,12 +346,14 @@ sub do_file {
                 # replace mysql_num_rows with pdo_num_rows
                 $line = $line =~ s/\$$rowsVar *= *mysql_num_rows\( *\$$resultsVar *\)/\$$rowsVar = pdo_num_rows(\$$resultsVar)/gir;
 
-                # Remove "if($resultsVar)" if it exists and there is no 'else' inline
+                # Remove "if($resultsVar)" if current and next line do not contain 'else'
                 # Example:
                 # if($rs) $rsc = pdo_num_rows($rs);
                 # $rsc = pdo_num_rows($rs);
                 # No Match: if($rs) $rsc = pdo_num_rows($rs); else $msg = 'No Records';
-                $line = $line =~ s/^([ \s\t]*+)(if\( *\$$resultsVar *\) *)(\$$rowsVar *= *pdo_num_rows\(\$$resultsVar\);) *(?!else)$/$1$3/gir;
+                if($line !~ /else/gi && $array[$i+1] !~ /else/gi) {
+                    $line = $line =~ s/if\( *\$$resultsVar *\) *(\$$rowsVar *= *pdo_num_rows\(\$$resultsVar\);)/$1/gir;
+                }
                 $array[$i] = $line;
             # match for loop over current row variable
             # Example: 
