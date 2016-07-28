@@ -40,6 +40,21 @@ my @varNames;
 my @keyNames;
 my @vars;
 
+# skip specific files
+my @skipFiles = qw(session_mysql.inc login.inc logout.php login.php);
+my %h;
+
+# Initialise the hash using a slice
+@h{@skipFiles} = undef;
+
+print "@files";
+
+# rewrite @files with @skipFiles removed
+@files = grep {not exists $h{$_}} @files;
+
+print "\n";
+print "@files";
+
 # operators
 my $ops = "[<>!=]{1,2}|LIKE";
 
@@ -102,7 +117,7 @@ sub do_file {
 
         # find start of SQL statement
         # Example: $sql =  "SELECT ....
-        if($line =~ /^([ \s\t]*+)\$([^ =]+) *= *" *(select|update|insert|delete)[ "]/i && $sql == 0) {
+        if($line =~ /^([ \s\t]*+)\$([^ =]+) *= *['"] *(select|update|insert|delete)[ "']/i && $sql == 0) {
 
 
             # record indentation
@@ -165,8 +180,11 @@ sub do_file {
                         if($x % 2 == 1) {
                             # use $varCount to guarantee unique keys
                             $varCount++;
+
+                            # remove leading/trailing apotrophes
+                            $vars[$x] = $vars[$x] =~ s/^[ ']*|[ ']*$//gr;
                             # escape all non-word characters(alphanumeric + underscore)
-                            $varName = quotemeta $vars[$x];
+                            $varName = quotemeta($vars[$x]);
                             # store "<column name>_$varCount" as $keyName
                             $keyName = $vars[$x-1] =~ s/\$?(.+) *$/$1_$varCount/r;
 
@@ -220,11 +238,13 @@ sub do_file {
                     foreach(@vars) {
                         # use $varCount to guarantee unique keys
                         $varCount++;
+                        # remove leading/trailing apotrophes
+                        $var = $_ =~ s/^[ ']*|[ ']*$//gr;
                         # escape all non-word characters(alphanumeric + underscore)
-                        $varName = quotemeta($_);
+                        $varName = quotemeta($var);
                         # replace non-word characters with underscores(for pdo compliance)
                         # brackets don't play nice, so they get their own category
-                        $keyName = $_ =~ s/(\[|\]|[^A-z0-9])+/_/gr;
+                        $keyName = $var =~ s/(\[|\]|[^A-z0-9])+/_/gr;
                         # trim leading/trailing underscores
                         $keyName = $keyName =~ s/(^_*|_*$)//gr;
                         # append $varCount to guarantee unique key
@@ -239,7 +259,7 @@ sub do_file {
                         $array[$i] = $line;
                         # append key and vars to respective arrays
                         push @keyNames, $keyName;
-                        push @varNames, $_;
+                        push @varNames, $var;
                     }
 
                 }
