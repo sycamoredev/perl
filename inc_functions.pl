@@ -1,5 +1,9 @@
 #!/usr/bin/perl
 
+sub uniq {
+    my %seen;
+    grep !$seen{$_}++, @_ 
+}
 # Receive arguments from .sh script
 my $file = $ARGV[0];
 my $type = $ARGV[1];
@@ -20,9 +24,7 @@ while (<$phpInput>) {
     # example: require_once('classes.inc');
     if(/require_once\(["'] *([A-Za-z\._0-9\/-]+\.inc) *["']\);/g) {
         # $1-$9 are automatically populated by regex groups in matching operations
-        if(!($1 ~~ @skipFiles)) {
-            push @incFiles, $1;
-        }
+        push @incFiles, $1;
     }
 }
 # Get length of file.
@@ -30,13 +32,18 @@ while (<$phpInput>) {
 $totalLines = $.;
 close $phpInput;
 
+# skip specific files
+my %h;
+
+# Initialise the hash using a slice
+@h{@skipFiles} = undef;
+
+# rewrite @incFiles with @skipFiles removed
+@incFiles = grep {not exists $h{$_}} @incFiles;
 
 my @incFunctions;
 
 
-# Skip specific functions that are commonly used,
-# add more if necessary.
-my @skipFunctions = ('Display', 'htmlQuotes');
 
 # "$|" forces the STDOUT buffer to flush before receiving a newline character
 # This effectively allows us to edit the terminal output even after it appears on screen
@@ -60,17 +67,31 @@ foreach(@incFiles) {
 
         # find function declarations
         if(/function +([A-Za-z_0-9-]+)\b/g) {
-            # if not in @incFunctions or @skipFunctions arrays, append to @incFunctions
-            if(!($1 ~~ @incFunctions) && !($1 ~~ @skipFunctions)) {
-                push @incFunctions, $1;
-            }
+            push @incFunctions, $1;
         }
     }
     close $incInput;
 }
 $| = 0;
+print "\n";
 
-print "\nFound ".scalar @incFunctions." unique function names.\n";
+# Skip specific functions that are commonly used,
+# add more if necessary.
+my @skipFunctions = ('Display', 'htmlQuotes');
+
+# clear out hash
+%h = undef;
+
+# Initialise the hash using a slice
+@h{@skipFunctions} = undef;
+
+# remove duplicate function names
+@incFunctions = uniq(@incFunctions);
+# rewrite @incFunctions with @skipFunctions removed
+@incFunctions = grep {not exists $h{$_}} @incFunctions;
+
+
+print "Found ".scalar @incFunctions." unique function names.\n";
 
 $| = 1;
 print "Searching $file for matches...0/$totalLines";
