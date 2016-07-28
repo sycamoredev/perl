@@ -47,13 +47,9 @@ my %h;
 # Initialise the hash using a slice
 @h{@skipFiles} = undef;
 
-print "@files";
 
 # rewrite @files with @skipFiles removed
 @files = grep {not exists $h{$_}} @files;
-
-print "\n";
-print "@files";
 
 # operators
 my $ops = "[<>!=]{1,2}|LIKE";
